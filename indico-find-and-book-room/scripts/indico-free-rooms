@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Free CERN meeting rooms for one slot, joined with the cached room list.
+# Usage: indico-free-rooms DATE START END CAPACITY [BUILDING ...]
+#   e.g. indico-free-rooms 2026-11-27 10:00 11:00 10 31 600 513
+# Output TSV: id, full_name, capacity, direct|NEEDS-CONFIRMATION, comments
+set -euo pipefail
+d=$1; s=$2; e=$3; cap=$4; shift 4
+blds=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+cache=/tmp/indico-rooms-$(date +%F).json
+[ -s "$cache" ] || aurora-agent call indico list_all_rooms --raw > "$cache"
+aurora-agent call indico --path /rooms/api/rooms/search \
+  capacity="$cap" start_dt="${d}T${s}:00" end_dt="${d}T${e}:00" repeat_frequency=NEVER --raw |
+jq -r --slurpfile r "$cache" --argjson b "$blds" '
+  .rooms as $ids
+  | [$r[0][] | select(.id as $i | $ids | index($i))
+             | select(($b|length)==0 or (.building as $x | $b | index($x)))]
+  | sort_by(.reservations_need_confirmation, .building, .capacity)[]
+  | [.id, .full_name, .capacity,
+     (if .reservations_need_confirmation then "NEEDS-CONFIRMATION" else "direct" end),
+     ((.comments // "") | gsub("\\s+"; " ") | .[0:160])] | @tsv'
